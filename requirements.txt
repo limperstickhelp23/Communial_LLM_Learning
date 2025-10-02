@@ -1,0 +1,7 @@
+chromadb
+langchain
+langchain-community
+langchain-ollama
+langchain-chroma
+pypdf
+boto3
