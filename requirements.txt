@@ -1,7 +1,5 @@
+ollama
+llama-index
+llama-index-llms-ollama
+llama-index-embeddings-huggingface
 chromadb
-langchain
-langchain-community
-langchain-ollama
-langchain-chroma
-pypdf
-boto3
