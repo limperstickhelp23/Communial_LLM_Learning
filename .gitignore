@@ -23,3 +23,6 @@ __pycache__/
 # Other hidden config
 .idea/
 *.swp
+
+# chroma db
+vec_embeds/
