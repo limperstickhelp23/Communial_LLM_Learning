@@ -6,6 +6,7 @@
 
 # conda env
 .conda
+.venv
 
 # Node.js dependencies (if applicable)
 node_modules/
@@ -26,3 +27,9 @@ __pycache__/
 
 # chroma db
 vec_embeds/
+
+#pubmedqa
+data/pubmedqa/
+data/chroma_/
+
+outputs/

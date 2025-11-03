@@ -1,0 +1,12 @@
+ollama: 
+  model: "llama3.2:1b"
+  temperature: 0.2
+  max_tokens: 256
+
+top_k: 2
+prompt_template: |
+  You are a medical QA assistant. Use the provided context from PubMed to answer.
+  Question: {question}
+  Context:
+  {context}
+  Answer concisely and cite evidence succinctly if helpful.

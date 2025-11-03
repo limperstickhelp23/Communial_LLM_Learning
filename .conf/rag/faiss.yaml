@@ -1,0 +1,7 @@
+index:
+  _target_: "rag.faiss.FaissIndex"
+  persist_dir: "data/faiss_index"
+  dim: 384
+  chunk_size: 512
+  chunk_overlap: 64
+  embed_model: "sentence-transformers/all-MiniLM-L6-v2"

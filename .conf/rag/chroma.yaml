@@ -1,0 +1,12 @@
+chroma_client:
+  _target_: "chromadb.PersistentClient"
+  path: "data/chroma_"
+
+index:
+  dim: 384
+  chunk_size: 512
+  chunk_overlap: 64
+
+embedder:
+  _target_: "llama_index.embeddings.huggingface.HuggingFaceEmbedding"
+  model_name: "sentence-transformers/all-MiniLM-L6-v2"

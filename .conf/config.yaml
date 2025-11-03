@@ -1,0 +1,14 @@
+
+
+
+defaults:
+  - data: pubmedqa
+  - model/student: llama3:1b_lora
+  - model/teacher: llama3:1b
+  - train: base
+  - rag: chroma
+  - _self_
+
+num_pairs: 5
+seed: 42
+device: cpu

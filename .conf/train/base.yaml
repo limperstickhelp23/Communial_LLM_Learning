@@ -1,0 +1,23 @@
+trainer:
+  epochs: 3
+  batch_size: 8
+  lr: 2e-4
+  weight_decay: 0.01
+  grad_accum: 2
+  max_gen_tokens: 128
+  warmup_ratio: 0.05
+  fp16: false
+  bf16: true
+
+loss:
+  lambda_contrast: 0.4
+  temperature: 0.07
+
+logging:
+  eval_every_steps: 10
+  save_every_steps: 2
+  out_dir: "checkpoints/"
+  save_dir: "checkpoints/model/"
+
+eval:
+  metrics: ["acc_ynm", "bleu", "rougeL"]

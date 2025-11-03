@@ -1,0 +1,8 @@
+name: "pubmed_qa"
+
+split_path: "data/pubmedqa/pqal_folds"
+
+preproc:
+  max_q_len: 512
+  max_ctx_len: 2048
+  answer_style: "ynm_long"  # "ynm" or "long"
