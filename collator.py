@@ -11,15 +11,6 @@ class KDCollator:
         self.max_length = max_length
     
     def __call__(self, batch: List[Dict]) -> Dict[str, torch.Tensor]:
-        """
-        Collate a batch of queries into tensors.
-        
-        Args:
-            batch: List of dicts with 'query' and optionally 'gold_answer'
-        
-        Returns:
-            Dictionary with tokenized inputs for student and teacher
-        """
         queries = [item['query'] for item in batch]
         
         # Tokenize student inputs (just the queries)

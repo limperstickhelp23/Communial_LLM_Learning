@@ -33,7 +33,7 @@ class SageLearner:
     def train_step_autoregressive(self, batch: dict) -> dict:
         """
         Args:
-            batch: Dictionary with student/teacher inputs and queries
+            batch: Dictionary with student/teacher inputs and attn masks
         
         Returns:
             Dictionary with:
@@ -54,7 +54,6 @@ class SageLearner:
         finished = torch.zeros(batch_size, dtype=torch.bool, device=self._student_device)
         
         total_loss = 0.0
-        per_token_losses = []
         num_tokens_generated = 0
         
         for step in range(max_gen_tokens):

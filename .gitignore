@@ -29,7 +29,6 @@ __pycache__/
 vec_embeds/
 
 #pubmedqa
-data/pubmedqa/
 data/chroma_/
 
 outputs/
