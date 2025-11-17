@@ -1,6 +1,7 @@
 import os
 import torch
-from tools import load_student, load_teacher, contrastive_loss
+from tools import load_student, load_teacher, kl_div_loss
+
 
 class SageLearner:
 
@@ -16,55 +17,233 @@ class SageLearner:
         self.retriever = self.vector_index.as_retriever(similarity_top_k=self.top_k)
 
         self.instantiate_models()
-        self.optimizer = kwargs.get('optimizer', torch.optim.AdamW(self.student.parameters(), lr=self.cfg.train.optim.lr))
+        self.optimizer = kwargs.get('optimizer', torch.optim.AdamW(
+            self.student.parameters(), 
+            lr=self.cfg.train.optim.lr
+        ))
 
     def instantiate_models(self):
         if self.student is None or self.stu_tok is None:
             self.student, self.stu_tok = load_student(self.cfg.model.student)
             if self.stu_tok.pad_token_id is None:
-                # Llama tokenizers usually do not define a PAD token; reuse EOS for generate()
                 self.stu_tok.pad_token = self.stu_tok.eos_token
         if self.teacher is None:
             self.teacher = load_teacher(self.cfg.model.teacher)
+
+    def train_step_autoregressive(self, batch: dict) -> dict:
+        """
+        Args:
+            batch: Dictionary with student/teacher inputs and queries
+            accumulate_loss: Whether to accumulate loss across tokens
+        
+        Returns:
+            Dictionary with:
+                - avg_loss: Combined loss across all generation steps
+                - num_tokens: Number of tokens generated
+        """
+
+        max_gen_tokens = getattr(self.cfg.train, "max_gen_tokens", 128)
+        
+        batch_size = batch['student_input_ids'].shape[0]
+        batch['teacher_input_ids'] = batch['teacher_input_ids'].to(self._teacher_device)
+        batch['teacher_attention_mask'] = batch['teacher_attention_mask'].to(self._teacher_device)
+
+        batch['student_input_ids'] = batch['student_input_ids'].to(self._student_device)
+        batch['student_attention_mask'] = batch['student_attention_mask'].to(self._student_device)
+         
+        # Track which sequences have finished (encountered EOS)
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=self._student_device)
+        
+        total_loss = 0.0
+        per_token_losses = []
+        num_tokens_generated = 0
+        
+        for step in range(max_gen_tokens):
+            # Get teacher's next token prediction
+            token_loss, teacher_next_tokens = self.train_step(batch, finished)
+            
+            total_loss += token_loss
+            if self._teacher_device != self._student_device:
+                student_next_tokens = teacher_next_tokens.to(self._student_device)
+            else:
+                student_next_tokens = teacher_next_tokens
+            
+            
+            num_tokens_generated += 1
+            
+            # Update finished status
+            is_eos = (teacher_next_tokens.squeeze(-1) == self.stu_tok.eos_token_id)
+            finished = finished | is_eos
+            
+            # Stop if all sequences are finished
+            if finished.all():
+                break
+            
+            # Append teacher's token to both sequences for next iteration
+            batch['teacher_input_ids'] = torch.cat([batch['teacher_input_ids'], teacher_next_tokens], dim=1)
+            batch['teacher_attention_mask'] = torch.cat([
+                batch['teacher_attention_mask'],
+                torch.ones((batch_size, 1), device=self._teacher_device)
+            ], dim=1)
+            
+            batch['student_input_ids'] = torch.cat([batch['student_input_ids'], student_next_tokens], dim=1)
+            batch['student_attention_mask'] = torch.cat([
+                batch['student_attention_mask'],
+                torch.ones((batch_size, 1), device=self._student_device)
+            ], dim=1)
+        
+        # Backward pass on accumulated loss
+        avg_loss = total_loss / num_tokens_generated
+            
+        # Gradient clipping
+        if hasattr(self.cfg.train.optim, 'max_grad_norm'):
+            torch.nn.utils.clip_grad_norm_(
+                self.student.parameters(),
+                self.cfg.train.optim.max_grad_norm
+            )
+        
+        self.optimizer.step()
+        
+        return {
+            'total_loss': avg_loss.detach().item(),
+            'num_tokens': num_tokens_generated,
+            'avg_loss': avg_loss.detach().item()
+        }
+    
+    def train_step(self, batch: dict, finished=None) -> torch.Tensor:
+        """
+        Process a batch of queries for next Token.
+        
+        Args:
+            batch: Dictionary containing:
+                - student_input_ids: Tensor of shape (batch_size, seq_len)
+                - student_attention_mask: Tensor of shape (batch_size, seq_len)
+                - teacher_input_ids: Tensor of shape (batch_size, seq_len)
+                - teacher_attention_mask: Tensor of shape (batch_size, seq_len)
+            finished:
+                - track finished queries.
+        
+        Returns:
+            Mean loss across the batch
+        """
+        # Move inputs to appropriate devices
+        teacher_inputs = {
+            'input_ids': batch['teacher_input_ids'].to(self._teacher_device),
+            'attention_mask': batch['teacher_attention_mask'].to(self._teacher_device)
+        }
+        student_inputs = {
+            'input_ids': batch['student_input_ids'].to(self._student_device),
+            'attention_mask': batch['student_attention_mask'].to(self._student_device)
+        }
+
+        # Get teacher logits (no gradients needed)
+        with torch.no_grad():
+            teacher_outputs = self.teacher(**teacher_inputs)
+            t_logits = teacher_outputs.logits  # (batch_size, seq_len, vocab_size)
+        
+            
+
+        # Get student logits
+        student_outputs = self.student(**student_inputs)
+        s_logits = student_outputs.logits  # (batch_size, seq_len, vocab_size)
+        
+        
+        s_last_logits = s_logits[:, -1, :]
+        t_last_logits = t_logits[:, -1, :]
+        teacher_next_tokens = t_last_logits.argmax(dim=-1, keepdim=True).to(self._teacher_device) # greedy sample.
+
+        if t_logits.device != self._student_device:
+            t_logits = t_logits.to(self._student_device)
+
+        # Shape: (batch_size, vocab_size)
+        loss = kl_div_loss(
+            s_last_logits,
+            t_last_logits,
+            self.cfg.train.loss.temperature,
+        )
+
+        # Mask out finished sequences
+        if finished != None and finished.any():
+            # Create a mask for active sequences
+            active_mask = (~finished).float()
+            # Weight the loss by active sequences
+            loss = loss * active_mask.mean()
+        
+        # Backward pass
+        self.optimizer.zero_grad()
+        loss.backward()
+        
+        # Gradient clipping
+        if hasattr(self.cfg.train.optim, 'max_grad_norm'):
+            torch.nn.utils.clip_grad_norm_(
+                self.student.parameters(), 
+                self.cfg.train.optim.max_grad_norm
+            )
+        
+        self.optimizer.step()
+        
+        return loss , teacher_next_tokens
 
     def teacher_ans(self, query: str):
         prompt = self._build_prompt(query)
         t_tokenized = self.stu_tok(prompt, return_tensors="pt").to(self._teacher_device)
         t_logits = self.teacher(**t_tokenized)
-        self.t_logits = t_logits
         return t_logits
 
     def student_ans(self, query: str):
-        prompt = self._build_prompt(query)
-        s_tokenized = self.stu_tok(prompt, return_tensors="pt").to(self._student_device)
+        s_tokenized = self.stu_tok(query, return_tensors="pt").to(self._student_device)
         s_logits = self.student(**s_tokenized)
-        self.s_logits = s_logits
         return s_logits
-
-    def train_step(self, query: str) -> torch.Tensor:
-        with torch.no_grad():
-            t_logits = self.teacher_ans(query)
-
-        s_logits = self.student_ans(query)
-
-        loss = contrastive_loss(
-            s_logits.logits,
-            t_logits.logits,
-            self.cfg.train.loss.temperature,
-        )
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
-        return loss.detach()
 
     def save_student(self):
         save_dir = self.cfg.train.logging.save_dir
         os.makedirs(save_dir, exist_ok=True)
         self.student.save_pretrained(save_dir)
+        self.stu_tok.save_pretrained(save_dir)
 
-    def generate_answer(self, query: str, use_teacher: bool = False, max_new_tokens: int = 128) -> str:
-        prompt = self._build_prompt(query)
+    def generate_answer_batch(self, queries: list[str], use_teacher: bool = False, 
+                             max_new_tokens: int = 128) -> list[str]:
+        """
+        Generate answers for a batch of queries.
+        
+        Args:
+            queries: List of query strings
+            use_teacher: Whether to use teacher model
+            max_new_tokens: Maximum tokens to generate
+        
+        Returns:
+            List of generated answer strings
+        """
+        if use_teacher:
+            prompts = [self._build_prompt(q) for q in queries]
+        else:
+            prompts = queries
+        
+        inputs = self.stu_tok(
+            prompts, 
+            return_tensors="pt", 
+            padding=True,
+            truncation=True
+        ).to(self._teacher_device if use_teacher else self._student_device)
+        
+        model = self.teacher if use_teacher else self.student
+        
+        with torch.no_grad():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                pad_token_id=self.stu_tok.pad_token_id,
+                eos_token_id=self.stu_tok.eos_token_id,
+            )
+        
+        return [
+            self.stu_tok.decode(ids, skip_special_tokens=True) 
+            for ids in output_ids
+        ]
+
+    def generate_answer(self, query: str, use_teacher: bool = False, 
+                       max_new_tokens: int = 128) -> str:
+        prompt = self._build_prompt(query) if use_teacher else query
         inputs = self.stu_tok(prompt, return_tensors="pt").to(
             self._teacher_device if use_teacher else self._student_device
         )
@@ -79,15 +258,21 @@ class SageLearner:
         return self.stu_tok.decode(output_ids[0], skip_special_tokens=True)
 
     def _build_prompt(self, query: str) -> str:
+        """Build RAG prompt for a single query."""
         nodes = self.retriever.retrieve(query)
         context_blocks = []
         for node in nodes:
             if hasattr(node, "node") and node.node is not None:
                 context_blocks.append(node.node.get_content())
             else:
+                print(f"NO CONTEXT for {query}")
                 context_blocks.append(str(node))
         context_text = "\n\n".join(context_blocks)
         return self.prompt_template.format(context=context_text, question=query)
+    
+    def build_prompt_batch(self, queries: list[str]) -> list[str]:
+        """Build RAG prompts for a batch of queries."""
+        return [self._build_prompt(q) for q in queries]
 
     @property
     def _student_device(self):

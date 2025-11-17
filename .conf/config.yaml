@@ -1,6 +1,3 @@
-
-
-
 defaults:
   - data: pubmedqa
   - model/student: llama3:1b_lora
@@ -9,6 +6,6 @@ defaults:
   - rag: chroma
   - _self_
 
-num_pairs: 5
+num_pairs: 2
 seed: 42
 device: cpu

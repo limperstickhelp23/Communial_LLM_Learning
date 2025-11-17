@@ -31,3 +31,58 @@ def compute_metrics(student_texts, teacher_texts, gold_texts=None)->dict:
     metrics["cosine_sim"] = float(F.cosine_similarity(eS, eT).mean())
 
     return metrics
+
+
+
+def evaluate_model(learner, dataset, sample_size=5, max_new_tokens=128):
+    """
+    Evaluate the model on a sample of the dataset.
+    
+    Args:
+        learner: SageLearner instance
+        dataset: PubMedQADataset instance
+        sample_size: Number of samples to evaluate
+        max_new_tokens: Maximum tokens to generate
+    
+    Returns:
+        Dictionary of evaluation metrics
+    """
+    sample_size = min(sample_size, len(dataset))
+    if sample_size == 0:
+        return {}
+    
+    # Get sample queries and gold answers
+    sample_queries = dataset.get_queries()[:sample_size]
+    gold_lookup = dataset.get_gold_lookup()
+    gold_texts = [gold_lookup.get(q) for q in sample_queries]
+    
+    # Generate answers in batches for efficiency
+    batch_size = min(8, sample_size)  # Use smaller batch for generation
+    
+    student_texts = []
+    teacher_texts = []
+    
+    for i in range(0, sample_size, batch_size):
+        batch_queries = sample_queries[i:i+batch_size]
+        
+        # Generate student answers
+        student_batch = learner.generate_answer_batch(
+            batch_queries, 
+            use_teacher=False, 
+            max_new_tokens=max_new_tokens
+        )
+        student_texts.extend(student_batch)
+        
+        # Generate teacher answers
+        teacher_batch = learner.generate_answer_batch(
+            batch_queries,
+            use_teacher=True,
+            max_new_tokens=max_new_tokens
+        )
+        teacher_texts.extend(teacher_batch)
+    
+    # Compute metrics
+    if any(g is None for g in gold_texts):
+        gold_texts = None
+    
+    return compute_metrics(student_texts, teacher_texts, gold_texts=gold_texts)

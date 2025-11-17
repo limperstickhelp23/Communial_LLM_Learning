@@ -1,19 +1,16 @@
 import json
 import os
-from typing import List
-import warnings
 import shutil
-
-from llama_index.core import (Document, VectorStoreIndex, StorageContext)
-
-from llama_index.vector_stores.chroma import ChromaVectorStore
+from typing import List
+from omegaconf import OmegaConf
 import hydra
 from hydra.utils import instantiate as Instantiate
 
-from omegaconf import OmegaConf
+from llama_index.core import (Document, VectorStoreIndex, StorageContext)
+from llama_index.vector_stores.chroma import ChromaVectorStore
 
-from pydantic.warnings import  UnsupportedFieldAttributeWarning
-warnings.filterwarnings("ignore", category=UnsupportedFieldAttributeWarning)
+
+
 
 def setIndex(cfg)->List[VectorStoreIndex]:
     dataset = cfg.data.name
@@ -70,8 +67,11 @@ def getDocs(dataset_cl)->list:
     ]
     return docs
 
-def loadPubmedQA(split_path, split)->list:
-    split_file = os.path.join(split_path, f"pqal_fold{split}/dev_set.json")
+def loadPubmedQA(split_path, split=None)->list:
+    if split is None:
+        split_file = os.path.join(split_path, "pqal_fold0/train_set.json")
+    else:
+        split_file = os.path.join(split_path, f"pqal_fold{split}/dev_set.json")
     if not os.path.isfile(split_file):
         raise FileNotFoundError(f"Split file not found: {split_file}")
     with open(split_file, 'r') as f:
