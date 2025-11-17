@@ -34,7 +34,6 @@ class SageLearner:
         """
         Args:
             batch: Dictionary with student/teacher inputs and queries
-            accumulate_loss: Whether to accumulate loss across tokens
         
         Returns:
             Dictionary with:
@@ -116,10 +115,10 @@ class SageLearner:
         
         Args:
             batch: Dictionary containing:
-                - student_input_ids: Tensor of shape (batch_size, seq_len)
-                - student_attention_mask: Tensor of shape (batch_size, seq_len)
-                - teacher_input_ids: Tensor of shape (batch_size, seq_len)
-                - teacher_attention_mask: Tensor of shape (batch_size, seq_len)
+                - student_input_ids
+                - student_attention_mask
+                - teacher_input_ids
+                - teacher_attention_mask
             finished:
                 - track finished queries.
         
