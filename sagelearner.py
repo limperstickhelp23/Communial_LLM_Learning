@@ -58,7 +58,7 @@ class SageLearner:
         
         for step in range(max_gen_tokens):
             # Get teacher's next token prediction
-            token_loss, teacher_next_tokens = self.train_step(batch, finished)
+            token_loss, teacher_next_tokens = self.train_step(batch, finished, False)
             
             total_loss += token_loss
             if self._teacher_device != self._student_device:
@@ -92,14 +92,15 @@ class SageLearner:
         
         # Backward pass on accumulated loss
         avg_loss = total_loss / num_tokens_generated
-            
+        self.optimizer.zero_grad()
+        avg_loss.backward()
         # Gradient clipping
         if hasattr(self.cfg.train.optim, 'max_grad_norm'):
             torch.nn.utils.clip_grad_norm_(
                 self.student.parameters(),
                 self.cfg.train.optim.max_grad_norm
             )
-        
+
         self.optimizer.step()
         
         return {
@@ -108,7 +109,7 @@ class SageLearner:
             'avg_loss': avg_loss.detach().item()
         }
     
-    def train_step(self, batch: dict, finished=None) -> torch.Tensor:
+    def train_step(self, batch: dict, finished=None, backwards=True) -> torch.Tensor:
         """
         Process a batch of queries for next Token.
         
@@ -120,7 +121,8 @@ class SageLearner:
                 - teacher_attention_mask
             finished:
                 - track finished queries.
-        
+            backwards:
+                - whether to perform backward pass
         Returns:
             Mean loss across the batch
         """
@@ -168,17 +170,17 @@ class SageLearner:
             loss = loss * active_mask.mean()
         
         # Backward pass
-        self.optimizer.zero_grad()
-        loss.backward()
+        if backwards:
+            self.optimizer.zero_grad()
+            loss.backward()
+            # Gradient clipping
+            if hasattr(self.cfg.train.optim, 'max_grad_norm'):
+                torch.nn.utils.clip_grad_norm_(
+                    self.student.parameters(), 
+                    self.cfg.train.optim.max_grad_norm
+                )
         
-        # Gradient clipping
-        if hasattr(self.cfg.train.optim, 'max_grad_norm'):
-            torch.nn.utils.clip_grad_norm_(
-                self.student.parameters(), 
-                self.cfg.train.optim.max_grad_norm
-            )
-        
-        self.optimizer.step()
+            self.optimizer.step()
         
         return loss , teacher_next_tokens
 
