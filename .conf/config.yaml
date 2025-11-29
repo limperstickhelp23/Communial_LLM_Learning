@@ -1,7 +1,7 @@
 defaults:
   - data: pubmedqa
-  - model/student: llama3:1b_lora
-  - model/teacher: llama3:1b
+  - model/student: llama3_1b_lora
+  - model/teacher: llama3_1b
   - train: base
   - rag: chroma
   - _self_
