@@ -6,6 +6,6 @@ defaults:
   - rag: chroma
   - _self_
 
-num_pairs: 2
+num_pairs: 1
 seed: 42
 device: cpu

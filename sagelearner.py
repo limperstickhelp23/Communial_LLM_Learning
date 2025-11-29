@@ -55,6 +55,9 @@ class SageLearner:
         
         total_loss = 0.0
         num_tokens_generated = 0
+
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
         
         for step in range(max_gen_tokens):
             # Get teacher's next token prediction
@@ -103,6 +106,9 @@ class SageLearner:
 
         self.optimizer.step()
         
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+            
         return {
             'total_loss': avg_loss.detach().item(),
             'num_tokens': num_tokens_generated,
@@ -140,13 +146,14 @@ class SageLearner:
         with torch.no_grad():
             teacher_outputs = self.teacher(**teacher_inputs)
             t_logits = teacher_outputs.logits  # (batch_size, seq_len, vocab_size)
+            del teacher_outputs
         
             
 
         # Get student logits
         student_outputs = self.student(**student_inputs)
         s_logits = student_outputs.logits  # (batch_size, seq_len, vocab_size)
-        
+        del student_outputs
         
         s_last_logits = s_logits[:, -1, :]
         t_last_logits = t_logits[:, -1, :]

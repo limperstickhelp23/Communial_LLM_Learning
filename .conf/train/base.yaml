@@ -1,5 +1,5 @@
 epochs: 5
-batch_size: 12
+batch_size: 2
 max_gen_tokens: 128
 # warmup_ratio: 0.05
 # fp16: false
