@@ -20,7 +20,7 @@ def setIndex(cfg)->List[VectorStoreIndex]:
 
     # Collection paths for multiple indicies
     collection_paths = []
-    base_path = cfg.rag.chroma_client.path
+    base_path = cfg.rag.client.path
     for i in range(num_indicies):
         path = os.path.join(base_path, f'train_index_{i}')
         collection_paths.append(path)
@@ -45,7 +45,7 @@ def setIndex(cfg)->List[VectorStoreIndex]:
 
 def createIndexer(cfg, dataset, docs, persist_path)->VectorStoreIndex:
     embed = Instantiate(cfg.embedder)
-    client_cfg = OmegaConf.merge(cfg.chroma_client, OmegaConf.create({"path": persist_path}))
+    client_cfg = OmegaConf.merge(cfg.client, OmegaConf.create({"path": persist_path}))
     client = Instantiate(client_cfg)
     collection = client.get_or_create_collection(name=dataset)
     vector_store = ChromaVectorStore(chroma_collection=collection)

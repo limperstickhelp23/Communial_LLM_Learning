@@ -10,7 +10,7 @@ Compute evaluation metrics between student and teacher texts, optionally using g
 
 Computes the following metrics:
 - ROUGE-1 and ROUGE-L (if gold_texts provided, compares student_texts to gold_texts; otherwise compares student_texts to teacher_texts)
-- CLIPScore (compares student_texts to teacher_texts)
+- CLIPScore (compares student_texts to teacher_texts) (ON going issue with CLIPScore installation)
 - Cosine Similarity of SBERT embeddings (compares student_texts to teacher_texts)
 """
 def compute_metrics(student_texts, teacher_texts, gold_texts=None)->dict:
@@ -37,7 +37,9 @@ def compute_metrics(student_texts, teacher_texts, gold_texts=None)->dict:
 def evaluate_model(learner, dataset, sample_size=5, max_new_tokens=128):
     """
     Evaluate the model on a sample of the dataset.
-    
+    Computes metrics comparing student and teacher generated answers.
+    metrics computed: 
+        ROUGE-1, ROUGE-L, Cosine Similarity
     Args:
         learner: SageLearner instance
         dataset: PubMedQADataset instance
@@ -53,8 +55,8 @@ def evaluate_model(learner, dataset, sample_size=5, max_new_tokens=128):
     
     # Get sample queries and gold answers
     sample_queries = dataset.get_queries()[:sample_size]
-    gold_lookup = dataset.get_gold_lookup()
-    gold_texts = [gold_lookup.get(q) for q in sample_queries]
+    # gold_lookup = dataset.get_gold_lookup()
+    # gold_texts = [gold_lookup.get(q) for q in sample_queries]
     
     # Generate answers in batches for efficiency
     batch_size = min(8, sample_size)  # Use smaller batch for generation
@@ -84,5 +86,5 @@ def evaluate_model(learner, dataset, sample_size=5, max_new_tokens=128):
     # Compute metrics
     if any(g is None for g in gold_texts):
         gold_texts = None
-    
+    gold_texts = None #for now 
     return compute_metrics(student_texts, teacher_texts, gold_texts=gold_texts)

@@ -7,17 +7,32 @@ from eval import evaluate_model
 from sagelearner import SageLearner
 from dataset import PubMedQADataset
 from collator import KDCollator
-from data.prepare_dataset import setIndex
-
+# from data.prepare_dataset import setIndex --- IGNORE(legacy) ---
+from data.setup_dataset import setIndex
 
 @hydra.main(config_path=".conf/", config_name="config", version_base="1.3")
 def train_model(cfg):
-    # Setup indices
-    indicies = setIndex(cfg)
-    vector_index = indicies[0]  # Use the first index for retrieval
+    logging.info("="*30)
+    logging.info("Starting Training")
+    logging.info("="*30)
+    
+    # Setup indices - automatically loads from disk if they exist
+    logging.info("Setting up RAG indices...")
+    force_rebuild = getattr(cfg.rag, 'force_rebuild_indices', False)
+    
+    try:
+        indices = setIndex(cfg, force_rebuild=force_rebuild)
+        logging.info(f"RAG indices ready ({len(indices)} indices)")
+    except Exception as e:
+        logging.error(f"Failed to setup indices: {e}")
+        raise
+    
+    vector_index = indices[0]  # Use the first index for retrieval
     
     # Initialize learner
+    logging.info("Initializing SageLearner...")
     learner = SageLearner(cfg, vector_index)
+    logging.info("SageLearner initialized")
     
     # Create dataset
     dataset = PubMedQADataset(
@@ -48,16 +63,27 @@ def train_model(cfg):
         batch_size=batch_size,
         shuffle=True,
         collate_fn=collator,
-        num_workers=cfg.train.get('num_workers', 0),
-        pin_memory=cfg.train.get('pin_memory', True)
+        num_workers=cfg.train.get('num_workers', 0)
     )
+    total_batches = train_loader.__len__()
     
     # Training configuration
     max_new_tokens = getattr(cfg.train, "max_gen_tokens", 128)
     eval_sample_size = getattr(cfg.train.logging, "eval_sample_size", 5)
-    
+
+    logging.info("="*30)
+    logging.info("Training Configuration")
+    logging.info(">"*30)
+    logging.info(f"Epochs: {cfg.train.epochs}")
+    logging.info(f"Batch size: {batch_size}")
+    logging.info(f"Max generation tokens: {max_new_tokens}")
+    logging.info(f"Learning rate: {cfg.train.optim.lr}")
+    logging.info(f"Eval sample size: {eval_sample_size}")
+    logging.info(f"Save directory: {cfg.train.logging.save_dir}")
+    logging.info("="*30)
+
     # Training loop
-    for epoch in trange(cfg.train.epochs, desc=f"Training:"):
+    for epoch in range(cfg.train.epochs): #trange(cfg.train.epochs, desc=f"Training:"):
         logging.info(f"Epoch {epoch+1}/{cfg.train.epochs}")
         learner.student.train()
         
@@ -75,7 +101,7 @@ def train_model(cfg):
             num_batches += 1
             
             # Update progress bar
-            logging.info(f"Batch: {num_batches}/{batch_size} loss: {loss:.4f} token_gen: {token_gen}")
+            logging.info(f"Batch: {num_batches}/{total_batches} loss: {loss:.4f} token_gen: {token_gen}")
             pbar.set_postfix({'loss': f'{loss:.4f}', 'token_gen': token_gen})
         
         avg_loss = total_loss / num_batches

@@ -1,6 +1,8 @@
-chroma_client:
+client:
   _target_: "chromadb.PersistentClient"
   path: "data/chroma_"
+
+force_rebuild_indices: true
 
 index:
   dim: 384

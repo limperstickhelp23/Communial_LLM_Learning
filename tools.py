@@ -1,7 +1,7 @@
 import json
 import os
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import LoraConfig, get_peft_model
+from peft import get_peft_model
 from hydra.utils import instantiate
 import torch
 from torch.nn import functional as F
@@ -19,8 +19,8 @@ def load_student(cfg)->tuple[AutoModelForCausalLM, AutoTokenizer]:
     
     model = model.to(device)
     # Enable gradient checkpointing if specified
-    # if cfg.gradient_checkpointing:
-    #     model.gradient_checkpointing_enable()
+    if cfg.gradient_checkpointing:
+        model.gradient_checkpointing_enable()
     lora = instantiate(cfg.peft)
     model = get_peft_model(model, lora)
     return model, tok

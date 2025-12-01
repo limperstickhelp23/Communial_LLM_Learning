@@ -55,9 +55,9 @@ class SageLearner:
         
         total_loss = 0.0
         num_tokens_generated = 0
-
-        if torch.backends.mps.is_available():
-            torch.mps.empty_cache()
+        
+        # if torch.backends.mps.is_available():
+        #     torch.mps.empty_cache()
         
         for step in range(max_gen_tokens):
             # Get teacher's next token prediction
@@ -106,8 +106,8 @@ class SageLearner:
 
         self.optimizer.step()
         
-        if torch.backends.mps.is_available():
-            torch.mps.empty_cache()
+        # if torch.backends.mps.is_available():
+        #     torch.mps.empty_cache()
             
         return {
             'total_loss': avg_loss.detach().item(),
@@ -147,9 +147,7 @@ class SageLearner:
             teacher_outputs = self.teacher(**teacher_inputs)
             t_logits = teacher_outputs.logits  # (batch_size, seq_len, vocab_size)
             del teacher_outputs
-        
             
-
         # Get student logits
         student_outputs = self.student(**student_inputs)
         s_logits = student_outputs.logits  # (batch_size, seq_len, vocab_size)
@@ -173,7 +171,6 @@ class SageLearner:
         if finished != None and finished.any():
             # Create a mask for active sequences
             active_mask = (~finished).float()
-            # Weight the loss by active sequences
             loss = loss * active_mask.mean()
         
         # Backward pass

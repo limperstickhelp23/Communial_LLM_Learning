@@ -18,7 +18,7 @@ class PubMedQADataset(Dataset):
         self.pubmed_ids = []
         
         for i in range(folds):
-            fold_path = os.path.join(split_path, f"pqal_fold{i}/dev_set.json")
+            fold_path = os.path.join(split_path, f"pqal_fold{i}/dev_set.json")# Double check this path
             with open(fold_path, 'r') as f:
                 dataset_cl = json.load(f)
                 for pubid, ex in dataset_cl.items():

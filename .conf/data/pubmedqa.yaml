@@ -1,6 +1,6 @@
 name: "pubmed_qa"
 
-split_path: "data/pubmedqa/pqal_folds"
+split_path: "data/pubmedqa/pqal_folds(2)"
 
 preproc:
   max_q_len: 512
