@@ -167,6 +167,7 @@ def main():
         # Load original dataset
         dataset = json.load(open('../data/ori_pqal.json'))
         print(f"Loaded {len(dataset)} samples from ori_pqal.json")
+        os.makedirs(args.output_dir, exist_ok=True)
         
         # Split into CV and test sets
         cv_ratio = 1.0 - args.test_ratio
