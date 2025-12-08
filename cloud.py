@@ -48,7 +48,7 @@ def train_model(cfg):
     # Create dataset
     dataset = PubMedQADataset(
         split_path=cfg.data.split_path,
-        folds=10,
+        folds=cfg.data.get('folds', 1),
         include_gold=True
     )
     

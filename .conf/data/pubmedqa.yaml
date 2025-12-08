@@ -1,6 +1,7 @@
 name: "pubmed_qa"
 
 split_path: "data/pubmedqa/pqal_folds(2)"
+folds: 10 # Number of CV folds
 
 preproc:
   max_q_len: 512
