@@ -5,7 +5,7 @@ peft>=0.13
 sentence-transformers
 llama-index
 llama-index-vector-stores-chroma
-# faiss-cpu
+llama-index-embeddings-huggingface
 datasets
 evaluate
 rouge-score
