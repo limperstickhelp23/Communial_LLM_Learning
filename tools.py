@@ -17,7 +17,7 @@ def load_student(cfg)->tuple[AutoModelForCausalLM, AutoTokenizer]:
     tok = AutoTokenizer.from_pretrained(cfg.hf_model.pretrained_model_name_or_path, use_fast=True)
     model = instantiate(cfg.hf_model)
     
-    model = model.to(device)
+    # model = model.to(device) # Accelerate will handle this
     # Enable gradient checkpointing if specified
     if cfg.gradient_checkpointing:
         model.gradient_checkpointing_enable()
@@ -45,6 +45,11 @@ def kl_div_loss(student_logits, teacher_logits, temperature=0.07):
     student_log_probs = F.log_softmax(student_scaled, dim=-1).to(device)
     teacher_probs = F.softmax(teacher_scaled, dim=-1).to(device)
     return F.kl_div(student_log_probs, teacher_probs, reduction="batchmean")
+
+
+
+
+"""Legacy function (Using DataLoader and collator now)"""
 
 def getQueries(split_path, folds=10)->list[str]:
     queries = [ ]

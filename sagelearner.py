@@ -1,5 +1,6 @@
 import os
 import torch
+from accelerate import Accelerator
 from tools import load_student, load_teacher, kl_div_loss
 
 
@@ -21,6 +22,14 @@ class SageLearner:
             self.student.parameters(), 
             lr=self.cfg.train.optim.lr
         ))
+        print("mixed_precision:", cfg.train.get('mixed_precision', 'no'))
+        self.accelerator = Accelerator(
+            gradient_accumulation_steps=cfg.train.get('gradient_accumulation_steps', 1),
+            mixed_precision=cfg.train.get('mixed_precision', 'no'),  # 'fp16', 'bf16', or 'no'
+        )
+        # Log device info
+        self.accelerator.print(f"Student model on: {self.accelerator.device}")
+        self.accelerator.print(f"Number of processes: {self.accelerator.num_processes}")
 
     def instantiate_models(self):
         if self.student is None or self.stu_tok is None:
@@ -44,11 +53,11 @@ class SageLearner:
         max_gen_tokens = getattr(self.cfg.train, "max_gen_tokens", 128)
         
         batch_size = batch['student_input_ids'].shape[0]
-        batch['teacher_input_ids'] = batch['teacher_input_ids'].to(self._teacher_device)
-        batch['teacher_attention_mask'] = batch['teacher_attention_mask'].to(self._teacher_device)
+        # batch['teacher_input_ids'] = batch['teacher_input_ids'].to(self._teacher_device)
+        # batch['teacher_attention_mask'] = batch['teacher_attention_mask'].to(self._teacher_device)
 
-        batch['student_input_ids'] = batch['student_input_ids'].to(self._student_device)
-        batch['student_attention_mask'] = batch['student_attention_mask'].to(self._student_device)
+        # batch['student_input_ids'] = batch['student_input_ids'].to(self._student_device)
+        # batch['student_attention_mask'] = batch['student_attention_mask'].to(self._student_device)
          
         # Track which sequences have finished (encountered EOS)
         finished = torch.zeros(batch_size, dtype=torch.bool, device=self._student_device)
@@ -61,19 +70,19 @@ class SageLearner:
         
         for step in range(max_gen_tokens):
             # Get teacher's next token prediction
-            token_loss, teacher_next_tokens = self.train_step(batch, finished, False)
+            token_loss, teacher_next_token = self.train_step(batch, finished, False)
             
             total_loss += token_loss
-            if self._teacher_device != self._student_device:
-                student_next_tokens = teacher_next_tokens.to(self._student_device)
-            else:
-                student_next_tokens = teacher_next_tokens
+            # if self._teacher_device != self._student_device:
+            #     student_next_tokens = teacher_next_tokens.to(self._student_device)
+            # else:
+            student_next_token = teacher_next_token
             
             
             num_tokens_generated += 1
             
             # Update finished status
-            is_eos = (teacher_next_tokens.squeeze(-1) == self.stu_tok.eos_token_id)
+            is_eos = (teacher_next_token.squeeze(-1) == self.stu_tok.eos_token_id)
             finished = finished | is_eos
             
             # Stop if all sequences are finished
@@ -81,25 +90,26 @@ class SageLearner:
                 break
             
             # Append teacher's token to both sequences for next iteration
-            batch['teacher_input_ids'] = torch.cat([batch['teacher_input_ids'], teacher_next_tokens], dim=1)
+            batch['teacher_input_ids'] = torch.cat([batch['teacher_input_ids'], teacher_next_token], dim=1)
             batch['teacher_attention_mask'] = torch.cat([
                 batch['teacher_attention_mask'],
-                torch.ones((batch_size, 1), device=self._teacher_device)
+                torch.ones((batch_size, 1), device=self.accelerator.device)
             ], dim=1)
             
-            batch['student_input_ids'] = torch.cat([batch['student_input_ids'], student_next_tokens], dim=1)
+            batch['student_input_ids'] = torch.cat([batch['student_input_ids'], student_next_token], dim=1)
             batch['student_attention_mask'] = torch.cat([
                 batch['student_attention_mask'],
-                torch.ones((batch_size, 1), device=self._student_device)
+                torch.ones((batch_size, 1), device=self.accelerator.device)
             ], dim=1)
         
         # Backward pass on accumulated loss
         avg_loss = total_loss / num_tokens_generated
         self.optimizer.zero_grad()
-        avg_loss.backward()
+        self.accelerator.backward(avg_loss)
+        # avg_loss.backward()
         # Gradient clipping
         if hasattr(self.cfg.train.optim, 'max_grad_norm'):
-            torch.nn.utils.clip_grad_norm_(
+            self.accelerator.clip_grad_norm_(
                 self.student.parameters(),
                 self.cfg.train.optim.max_grad_norm
             )
@@ -131,31 +141,30 @@ class SageLearner:
                 - whether to perform backward pass
         Returns:
             Mean loss across the batch
+            last token predicted by teacher
         """
         # Move inputs to appropriate devices
         teacher_inputs = {
-            'input_ids': batch['teacher_input_ids'].to(self._teacher_device),
-            'attention_mask': batch['teacher_attention_mask'].to(self._teacher_device)
+            'input_ids': batch['teacher_input_ids'],#.to(self._teacher_device),
+            'attention_mask': batch['teacher_attention_mask']#.to(self._teacher_device)
         }
         student_inputs = {
-            'input_ids': batch['student_input_ids'].to(self._student_device),
-            'attention_mask': batch['student_attention_mask'].to(self._student_device)
+            'input_ids': batch['student_input_ids'],#.to(self._student_device),
+            'attention_mask': batch['student_attention_mask']#.to(self._student_device)
         }
 
         # Get teacher logits (no gradients needed)
         with torch.no_grad():
             teacher_outputs = self.teacher(**teacher_inputs)
             t_logits = teacher_outputs.logits  # (batch_size, seq_len, vocab_size)
-            del teacher_outputs
             
         # Get student logits
         student_outputs = self.student(**student_inputs)
         s_logits = student_outputs.logits  # (batch_size, seq_len, vocab_size)
-        del student_outputs
         
         s_last_logits = s_logits[:, -1, :]
         t_last_logits = t_logits[:, -1, :]
-        teacher_next_tokens = t_last_logits.argmax(dim=-1, keepdim=True).to(self._teacher_device) # greedy sample.
+        teacher_next_token = t_last_logits.argmax(dim=-1, keepdim=True).to(self._teacher_device) # greedy sample.
 
         if t_logits.device != self._student_device:
             t_logits = t_logits.to(self._student_device)
@@ -176,17 +185,18 @@ class SageLearner:
         # Backward pass
         if backwards:
             self.optimizer.zero_grad()
-            loss.backward()
+            self.accelerator.backward(loss)
+            # loss.backward()
             # Gradient clipping
             if hasattr(self.cfg.train.optim, 'max_grad_norm'):
-                torch.nn.utils.clip_grad_norm_(
+                self.accelerator.clip_grad_norm_(
                     self.student.parameters(), 
                     self.cfg.train.optim.max_grad_norm
                 )
         
             self.optimizer.step()
         
-        return loss , teacher_next_tokens
+        return loss , teacher_next_token
 
     def teacher_ans(self, query: str):
         prompt = self._build_prompt(query)
@@ -201,9 +211,12 @@ class SageLearner:
 
     def save_student(self):
         save_dir = self.cfg.train.logging.save_dir
-        os.makedirs(save_dir, exist_ok=True)
-        self.student.save_pretrained(save_dir)
-        self.stu_tok.save_pretrained(save_dir)
+        self.accelerator.wait_for_everyone()
+        unwrapped_model = self.accelerator.unwrap_model(self.student)
+        if self.accelerator.is_main_process:
+            os.makedirs(save_dir, exist_ok=True)
+            unwrapped_model.save_pretrained(save_dir)
+            self.stu_tok.save_pretrained(save_dir)
 
     def generate_answer_batch(self, queries: list[str], use_teacher: bool = False, 
                              max_new_tokens: int = 128) -> list[str]:

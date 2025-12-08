@@ -1,9 +1,9 @@
 epochs: 5
-batch_size: 2
+batch_size: 8
 max_gen_tokens: 128
 # warmup_ratio: 0.05
-# fp16: false
-  # bf16: true
+mixed_precision: "no" # "fp16" or "bf16" or "no"
+gradient_accumulation_steps: 4 
 
 loss:
   lambda_contrast: 0.4
