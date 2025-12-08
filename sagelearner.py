@@ -25,13 +25,10 @@ class SageLearner:
         print("mixed_precision:", cfg.train.get('mixed_precision', 'no'))
         self.accelerator = Accelerator(
             gradient_accumulation_steps=cfg.train.get('gradient_accumulation_steps', 1),
-            mixed_precision=cfg.train.get('mixed_precision', 'no'))
-        self.student, self.teacher, self.optimizer = self.accelerator.prepare(
-            self.student, self.teacher, self.optimizer
+            mixed_precision=cfg.train.get('mixed_precision', 'no'),  # 'fp16', 'bf16', or 'no'
         )
         # Log device info
         self.accelerator.print(f"Student model on: {self.accelerator.device}")
-        self.accelerator.print(f"Teacher model on: {self._teacher_device}")
         self.accelerator.print(f"Number of processes: {self.accelerator.num_processes}")
 
     def instantiate_models(self):
