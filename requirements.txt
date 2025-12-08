@@ -3,10 +3,9 @@ transformers>=4.43
 accelerate
 peft>=0.13
 sentence-transformers
-torch>=2.3
 llama-index
 llama-index-vector-stores-chroma
-faiss-cpu
+# faiss-cpu
 datasets
 evaluate
 rouge-score
