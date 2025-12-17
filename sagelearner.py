@@ -9,7 +9,6 @@ from accelerate.logging import get_logger
 
 
 class SageLearner:
-    log = get_logger(__name__)
 
     def __init__(self, cfg, vector_index, **kwargs):
         self.cfg = cfg
@@ -31,9 +30,9 @@ class SageLearner:
         ))
         self.setupAccelerator()
         # Log device info
-        self.accelerate.print(f"Student model on: {self.accelerate.device}")
-        self.accelerate.print(f"Teacher model on: {self.accelerate.device}")
-        self.accelerate.print(f"Number of processes: {self.accelerate.num_processes}")
+        self.log.info(f"Student model on: {self.accelerate.device}")
+        self.log.info(f"Teacher model on: {self.accelerate.device}")
+        self.log.info(f"Number of processes: {self.accelerate.num_processes}")
 
     def instantiate_models(self):
         if self.student is None or self.stu_tok is None:
@@ -44,22 +43,15 @@ class SageLearner:
             self.teacher = load_teacher(self.cfg.model.teacher)
 
     def setupAccelerator(self):
-        teach_path = Path(self.cfg.deepspeed.teacher).expanduser().resolve()
-        stud_path = Path(self.cfg.deepspeed.student).expanduser().resolve()
-        log.info(f"Using DeepSpeed config for teacher: {teach_path}")
-        log.info(f"hydra config dir: {self.cfg.deepspeed.teacher}")
-        log.info(f"Using DeepSpeed config for student: {stud_path}")
-        teacher_plugin = DeepSpeedPlugin(hf_ds_config=str(teach_path))
-        student_plugin = DeepSpeedPlugin(hf_ds_config=str(stud_path))
-
-        ds_plugins = {'student': student_plugin, 'teacher': teacher_plugin}
-
-        self.accelerate = Accelerator(deepspeed_plugins=ds_plugins)
-        
-        self.accelerate.state.select_deepspeed_plugin("student")
-        self.student, self.optimizer = self.accelerate.prepare(self.student, self.optimizer)
-        self.accelerate.state.select_deepspeed_plugin("teacher")
-        self.teacher = self.accelerate.prepare(self.teacher)
+        self.accelerate = Accelerator()
+        self.log = get_logger(__name__)
+        self.log.info(f"student dtype: {self.student.dtype}  teacher dtype: {self.teacher.dtype}")
+        self.student, self.teacher, self.optimizer = self.accelerate.prepare(
+            self.student, 
+            self.teacher, 
+            self.optimizer
+        )
+        self.log.info("Models and optimizer prepared with Accelerator.")
 
     def train_step_autoregressive(self, batch: dict) -> dict:
         """

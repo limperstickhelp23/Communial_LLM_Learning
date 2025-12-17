@@ -5,6 +5,7 @@ from typing import List, Optional
 from omegaconf import OmegaConf
 import hydra
 from hydra.utils import instantiate as Instantiate
+from accelerate.logging import get_logger
 import logging
 
 from llama_index.core import (
@@ -15,8 +16,9 @@ from llama_index.core import (
 )
 from llama_index.vector_stores.chroma import ChromaVectorStore
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
+READY_FILE = ".READY"
 
 class RAGIndexManager:
     """Manages creation, persistence, and loading of RAG indices."""
@@ -57,23 +59,14 @@ class RAGIndexManager:
             index = self._build_index(index_path, i)
             indices.append(index)
             logger.info(f"✓ Successfully built and persisted index {i}")
+
         
         logger.info(f"✅ All {len(indices)} indices ready at {os.path.abspath(self.base_path)}")
         return indices
     
     def _index_exists(self, index_path: str) -> bool:
-        """Check if a persisted index exists."""
-        # Check for essential files that indicate a valid persisted index
-        required_files = ['docstore.json', 'index_store.json', 'vector_store.json']
-        
-        if not os.path.isdir(index_path):
-            return False
-        
-        for file in required_files:
-            if not os.path.isfile(os.path.join(index_path, file)):
-                return False
-        
-        return True
+        """Check if a persisted index exists. Checks for ready file"""
+        return (os.path.isdir(index_path) and os.path.isfile(os.path.join(index_path, ".READY")))
     
     def _load_index(self, index_path: str, index_id: int) -> VectorStoreIndex:
         """Load a persisted index from disk."""
@@ -104,7 +97,8 @@ class RAGIndexManager:
     def _build_index(self, index_path: str, index_id: int) -> VectorStoreIndex:
         """Build a new index from scratch."""
         # Clean up existing directory
-        if os.path.isdir(index_path):
+
+        if os.path.isdir(index_path) and os.path.exists(index_path):
             shutil.rmtree(index_path)
         os.makedirs(index_path, exist_ok=True)
         
@@ -119,7 +113,9 @@ class RAGIndexManager:
         
         # Persist to disk
         index.storage_context.persist(persist_dir=index_path)
-        
+        #file to flag as ready 
+        with open(os.path.join(index_path, READY_FILE), 'w') as f:
+            f.write("ready")
         return index
     
     def _load_dataset(self, split_id: int) -> dict:
@@ -192,7 +188,7 @@ class RAGIndexManager:
     
     def clear_all(self):
         """Delete all persisted indices."""
-        if os.path.isdir(self.base_path):
+        if os.path.isdir(self.base_path) and os.path.exists(self.base_path):
             shutil.rmtree(self.base_path)
             logger.info(f"Cleared all indices from {self.base_path}")
         else:

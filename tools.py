@@ -24,6 +24,8 @@ def load_student(cfg)->tuple[AutoModelForCausalLM, AutoTokenizer]:
         model.gradient_checkpointing_enable()
     lora = instantiate(cfg.peft)
     model = get_peft_model(model, lora)
+    if cfg.hf_model.dtype == 'bfloat16':
+        model = model.to(torch.bfloat16)
     model.train()  # set to train mode (enables Dropout)
     return model, tok
 

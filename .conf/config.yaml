@@ -10,5 +10,6 @@ deepspeed:
   teacher: ${hydra:runtime.cwd}/.conf/deepspeed/teacher.json
   student: ${hydra:runtime.cwd}/.conf/deepspeed/student.json
 
+verbose: True
 num_pairs: 1
 seed: 42

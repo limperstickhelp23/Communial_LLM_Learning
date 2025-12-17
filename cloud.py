@@ -1,12 +1,14 @@
 import hydra
 import time 
 import os
+import logging
+import torch
 
 from torch.utils.data import DataLoader
 from tqdm import tqdm, trange
 from eval import evaluate_model
 from sagelearner import SageLearner
-from accelerate import PartialState
+from accelerate import PartialState, Accelerator
 from accelerate.logging import get_logger
 from dataset import PubMedQADataset
 from collator import KDCollator
@@ -15,35 +17,44 @@ from data.setup_dataset import setIndex
 
 @hydra.main(config_path=".conf/", config_name="config", version_base="1.3")
 def train_model(cfg):
-        
-    # Setup logging
     state = PartialState()
-    state.main_process_first = True
+    # Setup logging
     log = get_logger(__name__)
 
     log.info("="*30)
-    log.info("Starting RAG Student-Teacher Training")
-    log.info("="*30)
+    log.info("Starting RAG Student-Teacher")
+    log.info("-"*30)
     # Setup indices - automatically loads from disk if they exist
     log.info("Setting up RAG indices...")
     force_rebuild = getattr(cfg.rag, 'force_rebuild_indices', False)
     
     try:
-        indices = setIndex(cfg, force_rebuild=force_rebuild)
+        with state.local_main_process_first():
+            indices = setIndex(cfg, force_rebuild=force_rebuild)
         log.info(f"RAG indices ready ({len(indices)} indices)")
     except Exception as e:
         log.error(f"Failed to setup indices: {e}")
+        import torch.distributed as dist
+        if dist.is_initialized():
+            log.info("Destroying process group due to setup failure.")
+            dist.destroy_process_group()
         raise
     
     vector_index = indices[0]  # Use the first index for retrieval
     
     # Initialize learner
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        torch.cuda.synchronize()
+
     log.info("Initializing SageLearner...")
     learner = SageLearner(cfg, vector_index)
+    log = get_logger(__name__)
     log.info("SageLearner initialized")
     
     # Setup Accelerator
-    accel = learner.accelerator
+    accel = learner.accelerate
 
     
     # Create dataset
@@ -77,16 +88,15 @@ def train_model(cfg):
         collate_fn=collator,
         num_workers=cfg.train.get('num_workers', 0)
     )
-    accel.state.select_deepspeed_plugin("student")
     train_loader = accel.prepare(train_loader)
     total_batches = train_loader.__len__()
     
     # Training configuration
     max_new_tokens = getattr(cfg.train, "max_gen_tokens", 128)
     eval_sample_size = getattr(cfg.train.logging, "eval_sample_size", 5)
-    log.info("="*30)
+    log.info("-"*30)
     log.info("Starting Training")
-    log.info("="*30)
+    log.info("-"*30)
     log.info("Training Configuration")
     log.info(">"*30)
     log.info(f"Epochs: {cfg.train.epochs}")
@@ -96,11 +106,11 @@ def train_model(cfg):
     log.info(f"Learning rate: {cfg.train.optim.lr}")
     log.info(f"Eval sample size: {eval_sample_size}")
     log.info(f"Save directory: {cfg.train.logging.save_dir}")
-    log.info("="*30)
+    log.info("-"*30)
 
     start_time = time.perf_counter()
     # Training loop
-    for epoch in trange(cfg.train.epochs, desc=f"Training:", disable=(not accel.is_main_process or cfg.hydra.verbose)):
+    for epoch in trange(cfg.train.epochs, desc=f"Training:", disable=(not accel.is_main_process or not cfg.verbose)):
         log.info(f"Epoch {epoch+1}/{cfg.train.epochs}")
         learner.student.train()
         
@@ -108,7 +118,7 @@ def train_model(cfg):
         num_batches = 0
         
         # Use tqdm for progress bar
-        pbar = tqdm(train_loader, desc=f"Batch Training", disable=(not accel.is_main_process and not cfg.hydra.verbose))
+        pbar = tqdm(train_loader, desc=f"Batch Training", disable=(not accel.is_main_process and not cfg.verbose))
         
         for batch in pbar:
             start = time.perf_counter()
@@ -147,6 +157,7 @@ def train_model(cfg):
             accel.print(f"Student model saved at epoch {epoch+1}.")
     elapsed_time = time.perf_counter() - start_time
     log.info(f"Training completed in {elapsed_time/60:.2f} minutes.")
+    log.info("="*30)
     # Save final model
     learner.save_student()
     log.info(f"Student model saved. Path: {cfg.train.logging.save_dir}")
