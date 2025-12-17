@@ -6,6 +6,9 @@ defaults:
   - rag: chroma
   - _self_
 
+deepspeed:
+  teacher: ${hydra:runtime.cwd}/.conf/deepspeed/teacher.json
+  student: ${hydra:runtime.cwd}/.conf/deepspeed/student.json
+
 num_pairs: 1
 seed: 42
-device: cpu

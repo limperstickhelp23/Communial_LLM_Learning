@@ -1,16 +1,22 @@
 import os
 import torch
-from accelerate import Accelerator
+from pathlib import Path
+from hydra.utils import instantiate
 from tools import load_student, load_teacher, kl_div_loss
+from accelerate import DeepSpeedPlugin, Accelerator
+from accelerate.logging import get_logger
+
 
 
 class SageLearner:
+    log = get_logger(__name__)
 
     def __init__(self, cfg, vector_index, **kwargs):
         self.cfg = cfg
         self.vector_index = vector_index
         self.top_k = kwargs.get('top_k', cfg.model.teacher.top_k)
         self.prompt_template = kwargs.get('prompt_template', cfg.model.teacher.prompt_template)
+        
 
         self.student = kwargs.get('student_model', None)
         self.teacher = kwargs.get('teacher_model', None)
@@ -20,22 +26,14 @@ class SageLearner:
         self.instantiate_models()
         self.optimizer = kwargs.get('optimizer', torch.optim.AdamW(
             self.student.parameters(), 
-            lr=self.cfg.train.optim.lr
+            lr=self.cfg.train.optim.lr, 
+            weight_decay=self.cfg.train.optim.weight_decay
         ))
-        print("mixed_precision:", cfg.train.get('mixed_precision', 'no'))
-        self.accelerator = Accelerator(
-            gradient_accumulation_steps=cfg.train.get('gradient_accumulation_steps', 1),
-            mixed_precision=cfg.train.get('mixed_precision', 'no'),  # 'fp16', 'bf16', or 'no'
-        )
-        self.student, self.teacher, self.optimizer = self.accelerator.prepare(
-            self.student,
-            self.teacher,
-            self.optimizer
-        )
+        self.setupAccelerator()
         # Log device info
-        self.accelerator.print(f"Student model on: {self.accelerator.device}")
-        self.accelerator.print(f"Teacher model on: {self.accelerator.device}")
-        self.accelerator.print(f"Number of processes: {self.accelerator.num_processes}")
+        self.accelerate.print(f"Student model on: {self.accelerate.device}")
+        self.accelerate.print(f"Teacher model on: {self.accelerate.device}")
+        self.accelerate.print(f"Number of processes: {self.accelerate.num_processes}")
 
     def instantiate_models(self):
         if self.student is None or self.stu_tok is None:
@@ -44,6 +42,24 @@ class SageLearner:
                 self.stu_tok.pad_token = self.stu_tok.eos_token
         if self.teacher is None:
             self.teacher = load_teacher(self.cfg.model.teacher)
+
+    def setupAccelerator(self):
+        teach_path = Path(self.cfg.deepspeed.teacher).expanduser().resolve()
+        stud_path = Path(self.cfg.deepspeed.student).expanduser().resolve()
+        log.info(f"Using DeepSpeed config for teacher: {teach_path}")
+        log.info(f"hydra config dir: {self.cfg.deepspeed.teacher}")
+        log.info(f"Using DeepSpeed config for student: {stud_path}")
+        teacher_plugin = DeepSpeedPlugin(hf_ds_config=str(teach_path))
+        student_plugin = DeepSpeedPlugin(hf_ds_config=str(stud_path))
+
+        ds_plugins = {'student': student_plugin, 'teacher': teacher_plugin}
+
+        self.accelerate = Accelerator(deepspeed_plugins=ds_plugins)
+        
+        self.accelerate.state.select_deepspeed_plugin("student")
+        self.student, self.optimizer = self.accelerate.prepare(self.student, self.optimizer)
+        self.accelerate.state.select_deepspeed_plugin("teacher")
+        self.teacher = self.accelerate.prepare(self.teacher)
 
     def train_step_autoregressive(self, batch: dict) -> dict:
         """
@@ -70,7 +86,7 @@ class SageLearner:
         
         total_loss = 0.0
         num_tokens_generated = 0
-        
+        self.student.train()
         # if torch.backends.mps.is_available():
         #     torch.mps.empty_cache()
         
@@ -99,23 +115,23 @@ class SageLearner:
             batch['teacher_input_ids'] = torch.cat([batch['teacher_input_ids'], teacher_next_token], dim=1)
             batch['teacher_attention_mask'] = torch.cat([
                 batch['teacher_attention_mask'],
-                torch.ones((batch_size, 1), device=self.accelerator.device)
+                torch.ones((batch_size, 1), device=self.accelerate.device)
             ], dim=1)
             
             batch['student_input_ids'] = torch.cat([batch['student_input_ids'], student_next_token], dim=1)
             batch['student_attention_mask'] = torch.cat([
                 batch['student_attention_mask'],
-                torch.ones((batch_size, 1), device=self.accelerator.device)
+                torch.ones((batch_size, 1), device=self.accelerate.device)
             ], dim=1)
         
         # Backward pass on accumulated loss
         avg_loss = total_loss / num_tokens_generated
         self.optimizer.zero_grad()
-        self.accelerator.backward(avg_loss)
+        self.accelerate.backward(avg_loss)
         # avg_loss.backward()
         # Gradient clipping
         if hasattr(self.cfg.train.optim, 'max_grad_norm'):
-            self.accelerator.clip_grad_norm_(
+            self.accelerate.clip_grad_norm_(
                 self.student.parameters(),
                 self.cfg.train.optim.max_grad_norm
             )
@@ -191,11 +207,11 @@ class SageLearner:
         # Backward pass
         if backwards:
             self.optimizer.zero_grad()
-            self.accelerator.backward(loss)
+            self.accelerate.backward(loss)
             # loss.backward()
             # Gradient clipping
             if hasattr(self.cfg.train.optim, 'max_grad_norm'):
-                self.accelerator.clip_grad_norm_(
+                self.accelerate.clip_grad_norm_(
                     self.student.parameters(), 
                     self.cfg.train.optim.max_grad_norm
                 )
@@ -217,9 +233,9 @@ class SageLearner:
 
     def save_student(self):
         save_dir = self.cfg.train.logging.save_dir
-        self.accelerator.wait_for_everyone()
-        unwrapped_model = self.accelerator.unwrap_model(self.student)
-        if self.accelerator.is_main_process:
+        self.accelerate.wait_for_everyone()
+        unwrapped_model = self.accelerate.unwrap_model(self.student)
+        if self.accelerate.is_main_process:
             os.makedirs(save_dir, exist_ok=True)
             unwrapped_model.save_pretrained(save_dir)
             self.stu_tok.save_pretrained(save_dir)
@@ -250,7 +266,7 @@ class SageLearner:
         ).to(self._teacher_device if use_teacher else self._student_device)
         
         model = self.teacher if use_teacher else self.student
-        
+        model.eval()
         with torch.no_grad():
             output_ids = model.generate(
                 **inputs,
@@ -271,6 +287,7 @@ class SageLearner:
             self._teacher_device if use_teacher else self._student_device
         )
         model = self.teacher if use_teacher else self.student
+        model.eval()
         with torch.no_grad():
             output_ids = model.generate(
                 **inputs,

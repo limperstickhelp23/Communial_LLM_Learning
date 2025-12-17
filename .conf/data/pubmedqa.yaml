@@ -1,7 +1,10 @@
 name: "pubmed_qa"
 
-split_path: "data/pubmedqa/pqal_folds(2)"
-folds: 10 # Number of CV folds
+
+
+folds: 3 # Number of CV folds
+split_path: "data/pubmedqa/pqal_watson"
+
 
 preproc:
   max_q_len: 512

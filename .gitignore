@@ -32,3 +32,7 @@ vec_embeds/
 data/chroma_/
 
 outputs/
+
+data/pubmedqa/pqal_watson
+
+Miniforge3-Linux-x86_64.sh

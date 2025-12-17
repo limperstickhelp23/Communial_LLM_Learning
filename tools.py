@@ -5,6 +5,7 @@ from peft import get_peft_model
 from hydra.utils import instantiate
 import torch
 from torch.nn import functional as F
+import accelerate
 
 if torch.backends.mps.is_available():
     device = torch.device("mps")
@@ -23,6 +24,7 @@ def load_student(cfg)->tuple[AutoModelForCausalLM, AutoTokenizer]:
         model.gradient_checkpointing_enable()
     lora = instantiate(cfg.peft)
     model = get_peft_model(model, lora)
+    model.train()  # set to train mode (enables Dropout)
     return model, tok
 
 def load_teacher(cfg)->AutoModelForCausalLM:
@@ -45,8 +47,6 @@ def kl_div_loss(student_logits, teacher_logits, temperature=0.07):
     student_log_probs = F.log_softmax(student_scaled, dim=-1).to(device)
     teacher_probs = F.softmax(teacher_scaled, dim=-1).to(device)
     return F.kl_div(student_log_probs, teacher_probs, reduction="batchmean")
-
-
 
 
 """Legacy function (Using DataLoader and collator now)"""

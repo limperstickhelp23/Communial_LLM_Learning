@@ -1,12 +1,13 @@
-import logging
 import hydra
-import time
-from accelerate import Accelerator 
+import time 
+import os
+
 from torch.utils.data import DataLoader
 from tqdm import tqdm, trange
-
 from eval import evaluate_model
 from sagelearner import SageLearner
+from accelerate import PartialState
+from accelerate.logging import get_logger
 from dataset import PubMedQADataset
 from collator import KDCollator
 # from data.prepare_dataset import setIndex --- IGNORE(legacy) ---
@@ -14,19 +15,15 @@ from data.setup_dataset import setIndex
 
 @hydra.main(config_path=".conf/", config_name="config", version_base="1.3")
 def train_model(cfg):
-    accel = Accelerator()
-
-    class MainLogger:
-        def filter(self, record):
-            return accel.is_main_process
         
     # Setup logging
-    log = logging.getLogger()
-    log.addFilter(MainLogger())
+    state = PartialState()
+    state.main_process_first = True
+    log = get_logger(__name__)
+
     log.info("="*30)
-    log.info("Starting Training")
+    log.info("Starting RAG Student-Teacher Training")
     log.info("="*30)
-    
     # Setup indices - automatically loads from disk if they exist
     log.info("Setting up RAG indices...")
     force_rebuild = getattr(cfg.rag, 'force_rebuild_indices', False)
@@ -44,6 +41,10 @@ def train_model(cfg):
     log.info("Initializing SageLearner...")
     learner = SageLearner(cfg, vector_index)
     log.info("SageLearner initialized")
+    
+    # Setup Accelerator
+    accel = learner.accelerator
+
     
     # Create dataset
     dataset = PubMedQADataset(
@@ -72,23 +73,25 @@ def train_model(cfg):
     train_loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=False,
         collate_fn=collator,
         num_workers=cfg.train.get('num_workers', 0)
     )
-
+    accel.state.select_deepspeed_plugin("student")
     train_loader = accel.prepare(train_loader)
     total_batches = train_loader.__len__()
     
     # Training configuration
     max_new_tokens = getattr(cfg.train, "max_gen_tokens", 128)
     eval_sample_size = getattr(cfg.train.logging, "eval_sample_size", 5)
-
+    log.info("="*30)
+    log.info("Starting Training")
     log.info("="*30)
     log.info("Training Configuration")
     log.info(">"*30)
     log.info(f"Epochs: {cfg.train.epochs}")
     log.info(f"Batch size: {batch_size}")
+    log.info(f"Train size: {len(dataset)}")
     log.info(f"Max generation tokens: {max_new_tokens}")
     log.info(f"Learning rate: {cfg.train.optim.lr}")
     log.info(f"Eval sample size: {eval_sample_size}")
@@ -97,7 +100,7 @@ def train_model(cfg):
 
     start_time = time.perf_counter()
     # Training loop
-    for epoch in range(cfg.train.epochs): #trange(cfg.train.epochs, desc=f"Training:"):
+    for epoch in trange(cfg.train.epochs, desc=f"Training:", disable=(not accel.is_main_process or cfg.hydra.verbose)):
         log.info(f"Epoch {epoch+1}/{cfg.train.epochs}")
         learner.student.train()
         
@@ -105,7 +108,7 @@ def train_model(cfg):
         num_batches = 0
         
         # Use tqdm for progress bar
-        pbar = tqdm(train_loader, desc=f"Batch Training", disable=not accel.is_main_process)
+        pbar = tqdm(train_loader, desc=f"Batch Training", disable=(not accel.is_main_process and not cfg.hydra.verbose))
         
         for batch in pbar:
             start = time.perf_counter()
@@ -117,7 +120,7 @@ def train_model(cfg):
             num_batches += 1
             
             # Update progress bar
-            log.info(f"Batch: {num_batches}/{total_batches} loss: {loss:.4f} token_gen: {token_gen} time: {elapsed:.2f}s")
+            log.debug(f"Batch: {num_batches}/{total_batches} loss: {loss:.4f} token_gen: {token_gen} time: {elapsed:.2f}s")
             pbar.set_postfix({'loss': f'{loss:.4f}', 'token_gen': token_gen})
         
         avg_loss = total_loss / num_batches
