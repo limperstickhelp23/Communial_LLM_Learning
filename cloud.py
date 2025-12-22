@@ -18,8 +18,9 @@ from data.setup_dataset import setIndex
 @hydra.main(config_path=".conf/", config_name="config", version_base="1.3")
 def train_model(cfg):
     state = PartialState()
+    verbose = cfg.get('verbose', False)
     # Setup logging
-    log = get_logger(__name__)
+    log = get_logger(__name__, verbosity=logging.DEBUG if verbose else logging.INFO)
 
     log.info("="*30)
     log.info("Starting RAG Student-Teacher")
