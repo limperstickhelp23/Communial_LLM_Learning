@@ -5,7 +5,7 @@ from typing import List, Optional
 from omegaconf import OmegaConf
 import hydra
 from hydra.utils import instantiate as Instantiate
-from accelerate.logging import get_logger
+from logging import getLogger
 import logging
 
 from llama_index.core import (
@@ -16,7 +16,12 @@ from llama_index.core import (
 )
 from llama_index.vector_stores.chroma import ChromaVectorStore
 
-logger = get_logger(__name__)
+from tools import is_main_process
+
+if is_main_process():
+    logger = getLogger('mainLearner')
+else:
+    logger = logging.getLogger('lowerLearner')
 
 READY_FILE = ".READY"
 

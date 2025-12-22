@@ -1,7 +1,5 @@
 name: "pubmed_qa"
 
-
-
 folds: 3 # Number of CV folds
 split_path: "data/pubmedqa/pqal_watson"
 

@@ -13,8 +13,10 @@ elif torch.cuda.is_available():
 else:
     device = torch.device("cpu")
 
-def load_student(cfg)->tuple[AutoModelForCausalLM, AutoTokenizer]:
+def load_student(cfg, rank=None)->tuple[AutoModelForCausalLM, AutoTokenizer]:
     tok = AutoTokenizer.from_pretrained(cfg.hf_model.pretrained_model_name_or_path, use_fast=True)
+    global device
+    device = rank if rank is not None else device
     model = instantiate(cfg.hf_model)
     
     # Enable gradient checkpointing if specified
@@ -30,7 +32,9 @@ def load_student(cfg)->tuple[AutoModelForCausalLM, AutoTokenizer]:
     model.train()  # set to train mode (enables Dropout)
     return model, tok
 
-def load_teacher(cfg)->AutoModelForCausalLM:
+def load_teacher(cfg, rank=None)->AutoModelForCausalLM:
+    global device 
+    device = rank if rank is not None else device
     model = instantiate(cfg.hf_model).to(device) # load base model
     # turn off gradient descent
     for param in model.parameters():
@@ -53,15 +57,15 @@ def kl_div_loss(student_logits, teacher_logits, temperature=0.07):
     student_log_probs = F.log_softmax(student_scaled, dim=-1).to(device)
     teacher_probs = F.softmax(teacher_scaled, dim=-1).to(device)
     return F.kl_div(student_log_probs, teacher_probs, reduction="batchmean")
-
-
+# ------------------------------------------------------------
+"""Distributed training utilities"""
 import torch.distributed as dist
 
 def get_rank()->int:
     if dist.is_available() and dist.is_initialized():
         return dist.get_rank()
     else:
-        return 0
+        return os.environ.get('RANK', 0)
 
 def get_world_size()->int:
     if dist.is_available() and dist.is_initialized():
@@ -72,20 +76,22 @@ def get_world_size()->int:
 def is_main_process()->bool:
     return get_rank() == 0
 
-def setup_ddp(rank, world_size):
+def setup_ddp(rank, local_rank, world_size):
     os.environ['MASTER_ADDR'] = os.environ.get('MASTER_ADDR', 'localhost')
-    os.environ['MASTER_PORT'] = os.environ.get('MASTER_PORT', '12355')
+    os.environ['MASTER_PORT'] = os.environ.get('MASTER_PORT', '23535')
     
+    is_cuda = torch.cuda.is_available()
     # Initialize process group
     dist.init_process_group(
         backend='nccl' if torch.cuda.is_available() else 'gloo',
         rank=rank,
-        world_size=world_size
+        world_size=world_size, 
+        device_ids=[local_rank] if is_cuda else None
     )
-    
-    # Set device for this process
-    if torch.cuda.is_available():
-        torch.cuda.set_device(rank)
+    if is_cuda:
+        print(f"[Rank {rank}] Using GPU: {local_rank}/{torch.cuda.device_count()-1}")
+    else:
+        print(f"[Rank {rank}] Using CPU")
 
 def clean_up_ddp():
     dist.destroy_process_group()

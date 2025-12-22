@@ -1,3 +1,4 @@
+from logging import getLogger
 import os
 import torch
 from pathlib import Path
@@ -13,7 +14,10 @@ class SageLearner:
         self.vector_index = vector_index
         self.top_k = kwargs.get('top_k', cfg.model.teacher.top_k)
         self.prompt_template = kwargs.get('prompt_template', cfg.model.teacher.prompt_template)
-        
+        self.rank = kwargs.get('rank', None)
+        self.world_size = kwargs.get('world_size', None)
+        self.use_ddp = self.rank != None and self.world_size != None
+        self.log = getLogger('mainLearner')
 
         self.student = kwargs.get('student_model', None)
         self.teacher = kwargs.get('teacher_model', None)
@@ -21,6 +25,17 @@ class SageLearner:
         self.retriever = self.vector_index.as_retriever(similarity_top_k=self.top_k)
 
         self.instantiate_models()
+
+        if self.use_ddp:
+            self.student = torch.nn.parallel.DistributedDataParallel(
+                self.student,
+                device_ids=[self.rank] if torch.cuda.is_available() else None,
+                output_device=self.rank if torch.cuda.is_available() else None,
+                find_unused_parameters=False,
+                broadcast_buffers=False,  # Critical for ROCm/HIP
+                bucket_cap_mb=25  # Smaller bucket size for ROCm stability
+            )
+    
         self.optimizer = kwargs.get('optimizer', torch.optim.AdamW(
             self.student.parameters(), 
             lr=self.cfg.train.optim.lr, 
@@ -73,7 +88,7 @@ class SageLearner:
             
             total_loss += token_loss
             if self._teacher_device != self._student_device:
-                student_next_tokens = teacher_next_tokens.to(self._student_device)
+                student_next_token = teacher_next_token.to(self._student_device)
             else:
                 student_next_token = teacher_next_token
             
@@ -208,11 +223,15 @@ class SageLearner:
 
     def save_student(self):
         save_dir = self.cfg.train.logging.save_dir
-        self.accelerate.wait_for_everyone()
-        unwrapped_model = self.accelerate.unwrap_model(self.student)
-        if self.accelerate.is_main_process:
+        
+        if self.use_ddp:
+            torch.distributed.barrier()
+
+        if not self.use_ddp or self.rank == 0:
             os.makedirs(save_dir, exist_ok=True)
-            unwrapped_model.save_pretrained(save_dir)
+            # Unwrap DDP model if needed
+            model_to_save = self._unwrap_model()
+            model_to_save.save_pretrained(save_dir)
             self.stu_tok.save_pretrained(save_dir)
 
     def generate_answer_batch(self, queries: list[str], use_teacher: bool = False, 
@@ -296,3 +315,9 @@ class SageLearner:
     @property
     def _teacher_device(self):
         return next(self.teacher.parameters()).device
+    @property
+    def _unwrap_model(self, use_teacher=False):
+        model = self.teacher if use_teacher else self.student
+        if self.use_ddp and not use_teacher and hasattr(model, 'module'):
+            return model.module
+        return model
