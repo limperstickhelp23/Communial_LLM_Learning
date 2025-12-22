@@ -86,7 +86,7 @@ def setup_ddp(rank, local_rank, world_size):
         backend='nccl' if torch.cuda.is_available() else 'gloo',
         rank=rank,
         world_size=world_size, 
-        device_ids=[local_rank] if is_cuda else None
+        device_id=[local_rank] if is_cuda else None
     )
     if is_cuda:
         print(f"[Rank {rank}] Using GPU: {local_rank}/{torch.cuda.device_count()-1}")
