@@ -3,8 +3,6 @@ import torch
 from pathlib import Path
 from hydra.utils import instantiate
 from tools import load_student, load_teacher, kl_div_loss
-from accelerate import DeepSpeedPlugin, Accelerator
-from accelerate.logging import get_logger
 
 
 
@@ -28,11 +26,9 @@ class SageLearner:
             lr=self.cfg.train.optim.lr, 
             weight_decay=self.cfg.train.optim.weight_decay
         ))
-        self.setupAccelerator()
         # Log device info
-        self.log.info(f"Student model on: {self.accelerate.device}")
-        self.log.info(f"Teacher model on: {self.accelerate.device}")
-        self.log.info(f"Number of processes: {self.accelerate.num_processes}")
+        self.log.info(f"Student model on: {self._student_device}")
+        self.log.info(f"Teacher model on: {self._teacher_device}")
 
     def instantiate_models(self):
         if self.student is None or self.stu_tok is None:
@@ -41,17 +37,6 @@ class SageLearner:
                 self.stu_tok.pad_token = self.stu_tok.eos_token
         if self.teacher is None:
             self.teacher = load_teacher(self.cfg.model.teacher)
-
-    def setupAccelerator(self):
-        self.accelerate = Accelerator()
-        self.log = get_logger(__name__)
-        self.log.info(f"student dtype: {self.student.dtype}  teacher dtype: {self.teacher.dtype}")
-        self.student, self.teacher, self.optimizer = self.accelerate.prepare(
-            self.student, 
-            self.teacher, 
-            self.optimizer
-        )
-        self.log.info("Models and optimizer prepared with Accelerator.")
 
     def train_step_autoregressive(self, batch: dict) -> dict:
         """
@@ -67,11 +52,11 @@ class SageLearner:
         max_gen_tokens = getattr(self.cfg.train, "max_gen_tokens", 128)
         
         batch_size = batch['student_input_ids'].shape[0]
-        # batch['teacher_input_ids'] = batch['teacher_input_ids'].to(self._teacher_device)
-        # batch['teacher_attention_mask'] = batch['teacher_attention_mask'].to(self._teacher_device)
+        batch['teacher_input_ids'] = batch['teacher_input_ids'].to(self._teacher_device)
+        batch['teacher_attention_mask'] = batch['teacher_attention_mask'].to(self._teacher_device)
 
-        # batch['student_input_ids'] = batch['student_input_ids'].to(self._student_device)
-        # batch['student_attention_mask'] = batch['student_attention_mask'].to(self._student_device)
+        batch['student_input_ids'] = batch['student_input_ids'].to(self._student_device)
+        batch['student_attention_mask'] = batch['student_attention_mask'].to(self._student_device)
          
         # Track which sequences have finished (encountered EOS)
         finished = torch.zeros(batch_size, dtype=torch.bool, device=self._student_device)
@@ -87,10 +72,10 @@ class SageLearner:
             token_loss, teacher_next_token = self.train_step(batch, finished, False)
             
             total_loss += token_loss
-            # if self._teacher_device != self._student_device:
-            #     student_next_tokens = teacher_next_tokens.to(self._student_device)
-            # else:
-            student_next_token = teacher_next_token
+            if self._teacher_device != self._student_device:
+                student_next_tokens = teacher_next_tokens.to(self._student_device)
+            else:
+                student_next_token = teacher_next_token
             
             
             num_tokens_generated += 1
@@ -107,23 +92,22 @@ class SageLearner:
             batch['teacher_input_ids'] = torch.cat([batch['teacher_input_ids'], teacher_next_token], dim=1)
             batch['teacher_attention_mask'] = torch.cat([
                 batch['teacher_attention_mask'],
-                torch.ones((batch_size, 1), device=self.accelerate.device)
+                torch.ones((batch_size, 1), device=self._teacher_device)
             ], dim=1)
             
             batch['student_input_ids'] = torch.cat([batch['student_input_ids'], student_next_token], dim=1)
             batch['student_attention_mask'] = torch.cat([
                 batch['student_attention_mask'],
-                torch.ones((batch_size, 1), device=self.accelerate.device)
+                torch.ones((batch_size, 1), device=self._student_device)
             ], dim=1)
         
         # Backward pass on accumulated loss
         avg_loss = total_loss / num_tokens_generated
         self.optimizer.zero_grad()
-        self.accelerate.backward(avg_loss)
-        # avg_loss.backward()
+        avg_loss.backward()
         # Gradient clipping
         if hasattr(self.cfg.train.optim, 'max_grad_norm'):
-            self.accelerate.clip_grad_norm_(
+            torch.nn.utils.clip_grad_norm_(
                 self.student.parameters(),
                 self.cfg.train.optim.max_grad_norm
             )
@@ -159,12 +143,12 @@ class SageLearner:
         """
         # Move inputs to appropriate devices
         teacher_inputs = {
-            'input_ids': batch['teacher_input_ids'],#.to(self._teacher_device),
-            'attention_mask': batch['teacher_attention_mask']#.to(self._teacher_device)
+            'input_ids': batch['teacher_input_ids'].to(self._teacher_device),
+            'attention_mask': batch['teacher_attention_mask'].to(self._teacher_device)
         }
         student_inputs = {
-            'input_ids': batch['student_input_ids'],#.to(self._student_device),
-            'attention_mask': batch['student_attention_mask']#.to(self._student_device)
+            'input_ids': batch['student_input_ids'].to(self._student_device),
+            'attention_mask': batch['student_attention_mask'].to(self._student_device)
         }
 
         # Get teacher logits (no gradients needed)
@@ -199,11 +183,10 @@ class SageLearner:
         # Backward pass
         if backwards:
             self.optimizer.zero_grad()
-            self.accelerate.backward(loss)
-            # loss.backward()
+            loss.backward()
             # Gradient clipping
             if hasattr(self.cfg.train.optim, 'max_grad_norm'):
-                self.accelerate.clip_grad_norm_(
+                torch.nn.utils.clip_grad_norm_(
                     self.student.parameters(), 
                     self.cfg.train.optim.max_grad_norm
                 )

@@ -8,19 +8,25 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm, trange
 from eval import evaluate_model
 from sagelearner import SageLearner
-from accelerate import PartialState, Accelerator
-from accelerate.logging import get_logger
+from logging import getLogger
 from dataset import PubMedQADataset
 from collator import KDCollator
+from tools import is_main_process, get_rank, get_world_size, setup_ddp, clean_up_ddp
 # from data.prepare_dataset import setIndex --- IGNORE(legacy) ---
 from data.setup_dataset import setIndex
 
 @hydra.main(config_path=".conf/", config_name="config", version_base="1.3")
 def train_model(cfg):
-    state = PartialState()
     verbose = cfg.get('verbose', False)
+    use_ddp = cfg.get('use_ddp', False)
     # Setup logging
-    log = get_logger(__name__, verbosity=logging.DEBUG if verbose else logging.INFO)
+    log = getLogger(__name__, verbosity=logging.DEBUG if verbose else logging.INFO)
+
+    if is_main_process():
+        log.setLevel(logging.DEBUG if verbose else logging.INFO)
+    else:
+        log.setLevel(logging.WARNING)
+    
 
     log.info("="*30)
     log.info("Starting RAG Student-Teacher")
@@ -30,15 +36,19 @@ def train_model(cfg):
     force_rebuild = getattr(cfg.rag, 'force_rebuild_indices', False)
     
     try:
-        with state.local_main_process_first():
+        if is_main_process():
             indices = setIndex(cfg, force_rebuild=force_rebuild)
+        else:
+            dist.barrier()
+            indices = setIndex(cfg, force_rebuild=False)
+        
         log.info(f"RAG indices ready ({len(indices)} indices)")
     except Exception as e:
         log.error(f"Failed to setup indices: {e}")
         import torch.distributed as dist
         if dist.is_initialized():
             log.info("Destroying process group due to setup failure.")
-            dist.destroy_process_group()
+            clean_up_ddp()
         raise
     
     vector_index = indices[0]  # Use the first index for retrieval
@@ -51,11 +61,7 @@ def train_model(cfg):
 
     log.info("Initializing SageLearner...")
     learner = SageLearner(cfg, vector_index)
-    log = get_logger(__name__)
     log.info("SageLearner initialized")
-    
-    # Setup Accelerator
-    accel = learner.accelerate
 
     
     # Create dataset
@@ -89,7 +95,7 @@ def train_model(cfg):
         collate_fn=collator,
         num_workers=cfg.train.get('num_workers', 0)
     )
-    train_loader = accel.prepare(train_loader)
+
     total_batches = train_loader.__len__()
     
     # Training configuration
@@ -136,10 +142,10 @@ def train_model(cfg):
         
         avg_loss = total_loss / num_batches
         log.info(f"Average Train Loss: {avg_loss:.4f}")
-        accel.print(f"Epoch {epoch+1}/{cfg.train.epochs} - Average Loss: {avg_loss:.4f}")
+        # print(f"Epoch {epoch+1}/{cfg.train.epochs} - Average Loss: {avg_loss:.4f}")
         
         # Evaluate model at the end of each epoch
-        if (epoch + 1) % cfg.train.logging.eval_every_steps == 0:
+        if (epoch + 1) % cfg.train.logging.eval_every_steps == 0 and is_main_process():
             learner.student.eval()
             metrics = evaluate_model(
                 learner,
@@ -148,21 +154,24 @@ def train_model(cfg):
                 max_new_tokens=max_new_tokens,
             )
             log.info(f"Evaluation Metrics at epoch {epoch+1}: {metrics}")
-            accel.print(f"Evaluation Metrics at epoch {epoch+1}: {metrics}")
             learner.student.train()
-        
+
+            if use_ddp:
+                dist.barrier()
+
         # Save checkpoint
         if (epoch + 1) % cfg.train.logging.save_every_steps == 0:
             learner.save_student()
             log.info(f"Student model saved at epoch {epoch+1}.")
-            accel.print(f"Student model saved at epoch {epoch+1}.")
     elapsed_time = time.perf_counter() - start_time
     log.info(f"Training completed in {elapsed_time/60:.2f} minutes.")
     log.info("="*30)
     # Save final model
     learner.save_student()
     log.info(f"Student model saved. Path: {cfg.train.logging.save_dir}")
-    accel.print(f"Student model saved. Path: {cfg.train.logging.save_dir}")
+
+    if use_ddp:
+        clean_up_ddp()
 
 
 if __name__ == "__main__":
